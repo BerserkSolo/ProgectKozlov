@@ -26,7 +26,6 @@ public class ProverkaNaProst
     }
 }
 
-// Пример использования
 class Program
 {
     static void Main()
@@ -65,8 +64,3 @@ class Program
         }
     }
 }
-
-
-
-
-
