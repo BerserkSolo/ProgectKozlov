@@ -1,1 +1,259 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
+
+class MatrixMultiply
+{
+
+    private const string BlasLib = "libopenblas";
+    private enum CBLAS_ORDER : int { CblasRowMajor = 101 }
+    private enum CBLAS_TRANSPOSE : int { CblasNoTrans = 111 }
+
+    [DllImport(BlasLib, CallingConvention = CallingConvention.Cdecl)]
+    static extern void cblas_dgemm(
+        CBLAS_ORDER Order, CBLAS_TRANSPOSE TransA, CBLAS_TRANSPOSE TransB,
+        int M, int N, int K, double alpha,
+        double[] A, int lda, double[] B, int ldb,
+        double beta, double[] C, int ldc);
+
+    [DllImport(BlasLib, CallingConvention = CallingConvention.Cdecl)]
+    static extern int openblas_get_num_threads();
+
+    // ─── Константы ───────────────────────────────────────────────────────────
+    const int N = 1024;
+    const int TILE = 128;  // увеличен до 128 — лучше для многопоточности
+
+    static void Main()
+    {
+        double[] A = GenMatrix(N);
+        double[] B = GenMatrix(N);
+
+        long c = 2L * N * N * N;
+        Console.WriteLine($"Размер матриц      : {N}×{N} (double)");
+        Console.WriteLine($"Сложность c = 2·n³ : {c:E3} операций");
+        Console.WriteLine();
+
+        
+        { double[] t = new double[64 * 64]; Warmup(t, t, t, 64); }
+
+        // ── Вариант 1 ─────────────────────────────────────────────────────────
+        double[] C1 = new double[N * N];
+        double t1 = Median(3, () => { Array.Clear(C1, 0, C1.Length); Naive(A, B, C1, N); });
+        double p1 = c / t1 * 1e-6;
+        Console.WriteLine($"Вариант 1 (наивный ijk):       t = {t1:F3} с,  P = {p1:F1} MFlops");
+
+        // ── Вариант 2 ─────────────────────────────────────────────────────────
+        double[] C2 = new double[N * N];
+        double t2 = Median(5, () => {
+            Array.Clear(C2, 0, C2.Length);
+            cblas_dgemm(CBLAS_ORDER.CblasRowMajor,
+                        CBLAS_TRANSPOSE.CblasNoTrans,
+                        CBLAS_TRANSPOSE.CblasNoTrans,
+                        N, N, N, 1.0, A, N, B, N, 0.0, C2, N);
+        });
+        double p2 = c / t2 * 1e-6;
+        Console.WriteLine($"Вариант 2 (cblas_dgemm):       t = {t2:F3} с,  P = {p2:F1} MFlops");
+
+        // ── Вариант 3 ─────────────────────────────────────────────────────────
+        double[] C3 = new double[N * N];
+        double t3 = Median(3, () => { Array.Clear(C3, 0, C3.Length); Optimized(A, B, C3, N); });
+        double p3 = c / t3 * 1e-6;
+        Console.WriteLine($"Вариант 3 (AVX2+блок+MT):      t = {t3:F3} с,  P = {p3:F1} MFlops");
+
+        Console.WriteLine();
+        Console.WriteLine("─── Сравнительный анализ ──────────────────────────────────");
+        Console.WriteLine($"  Вариант 3 / Вариант 2 : {p3 / p2 * 100:F1} %");
+        Console.WriteLine($"  max|C1−C2| = {MaxDiff(C1, C2):E3}  ");
+        Console.WriteLine($"  max|C2−C3| = {MaxDiff(C2, C3):E3}  ");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Вариант 1 — наивный ijk
+    // ═══════════════════════════════════════════════════════════════════════
+    static void Naive(double[] A, double[] B, double[] C, int n)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            int rA = i * n;
+            for (int j = 0; j < n; j++)
+            {
+                double s = 0;
+                for (int k = 0; k < n; k++)
+                    s += A[rA + k] * B[k * n + j];
+                C[i * n + j] = s;
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Вариант 3 — оптимизированный
+    //
+    // [1] Транспозиция B → Bt: доступ к Bt[j,k] последовательный
+    // [2] Блоки TILE=128: рабочий набор 3×128²×8 = 384 КБ — в L2/L3
+    // [3] Parallel.For: все ядра CPU
+    // ═══════════════════════════════════════════════════════════════════════
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    static void Optimized(double[] A, double[] B, double[] C, int n)
+    {
+        // [1] Транспозиция B параллельно
+        double[] Bt = new double[n * n];
+        Parallel.For(0, n, i =>
+        {
+            for (int j = 0; j < n; j++)
+                Bt[j * n + i] = B[i * n + j];
+        });
+
+        int tc = (n + TILE - 1) / TILE;
+
+        // [2+3] Блочное умножение, параллелизм по строкам блоков
+        Parallel.For(0, tc, ii =>
+        {
+            int iS = ii * TILE, iE = Math.Min(iS + TILE, n);
+
+            for (int kk = 0; kk < n; kk += TILE)
+            {
+                int kE = Math.Min(kk + TILE, n);
+                for (int jj = 0; jj < n; jj += TILE)
+                {
+                    int jE = Math.Min(jj + TILE, n);
+
+                    for (int i = iS; i < iE; i++)
+                    {
+                        int rA = i * n, rC = i * n;
+                        for (int j = jj; j < jE; j++)
+                        {
+                            int rBt = j * n;
+                            double sum = InnerAVX(A, Bt, rA, rBt, kk, kE);
+                            C[rC + j] += sum;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    static unsafe double InnerAVX(double[] A, double[] Bt,
+                                   int rA, int rBt, int kStart, int kEnd)
+    {
+        double result = 0;
+
+        fixed (double* pA = A)
+        fixed (double* pBt = Bt)
+        {
+            double* a = pA + rA;
+            double* bt = pBt + rBt;
+            int k = kStart;
+
+            if (Fma.IsSupported)
+            {
+               
+                var acc0 = Vector256<double>.Zero;
+                var acc1 = Vector256<double>.Zero;
+                var acc2 = Vector256<double>.Zero;
+                var acc3 = Vector256<double>.Zero;
+
+                int kStop = kEnd - 15;
+                for (; k < kStop; k += 16)
+                {
+                    acc0 = Fma.MultiplyAdd(
+                        Vector256.LoadUnsafe(ref a[k]),
+                        Vector256.LoadUnsafe(ref bt[k]), acc0);
+                    acc1 = Fma.MultiplyAdd(
+                        Vector256.LoadUnsafe(ref a[k + 4]),
+                        Vector256.LoadUnsafe(ref bt[k + 4]), acc1);
+                    acc2 = Fma.MultiplyAdd(
+                        Vector256.LoadUnsafe(ref a[k + 8]),
+                        Vector256.LoadUnsafe(ref bt[k + 8]), acc2);
+                    acc3 = Fma.MultiplyAdd(
+                        Vector256.LoadUnsafe(ref a[k + 12]),
+                        Vector256.LoadUnsafe(ref bt[k + 12]), acc3);
+                }
+
+                // Ещё кратно 4
+                kStop = kEnd - 3;
+                for (; k < kStop; k += 4)
+                    acc0 = Fma.MultiplyAdd(
+                        Vector256.LoadUnsafe(ref a[k]),
+                        Vector256.LoadUnsafe(ref bt[k]), acc0);
+
+                var sum = Avx.Add(Avx.Add(acc0, acc1), Avx.Add(acc2, acc3));
+                result = sum[0] + sum[1] + sum[2] + sum[3];
+            }
+            else if (Avx2.IsSupported)
+            {
+                // ── AVX2 путь без FMA ─────────────────────────────────────────
+                var acc0 = Vector256<double>.Zero;
+                var acc1 = Vector256<double>.Zero;
+                var acc2 = Vector256<double>.Zero;
+                var acc3 = Vector256<double>.Zero;
+
+                int kStop = kEnd - 15;
+                for (; k < kStop; k += 16)
+                {
+                    acc0 = Avx.Add(acc0, Avx.Multiply(
+                        Vector256.LoadUnsafe(ref a[k]),
+                        Vector256.LoadUnsafe(ref bt[k])));
+                    acc1 = Avx.Add(acc1, Avx.Multiply(
+                        Vector256.LoadUnsafe(ref a[k + 4]),
+                        Vector256.LoadUnsafe(ref bt[k + 4])));
+                    acc2 = Avx.Add(acc2, Avx.Multiply(
+                        Vector256.LoadUnsafe(ref a[k + 8]),
+                        Vector256.LoadUnsafe(ref bt[k + 8])));
+                    acc3 = Avx.Add(acc3, Avx.Multiply(
+                        Vector256.LoadUnsafe(ref a[k + 12]),
+                        Vector256.LoadUnsafe(ref bt[k + 12])));
+                }
+
+                kStop = kEnd - 3;
+                for (; k < kStop; k += 4)
+                    acc0 = Avx.Add(acc0, Avx.Multiply(
+                        Vector256.LoadUnsafe(ref a[k]),
+                        Vector256.LoadUnsafe(ref bt[k])));
+
+                var sum = Avx.Add(Avx.Add(acc0, acc1), Avx.Add(acc2, acc3));
+                result = sum[0] + sum[1] + sum[2] + sum[3];
+            }
+
+            // Остаток (< 4 элементов) — всегда
+            for (; k < kEnd; k++)
+                result += a[k] * bt[k];
+        }
+
+        return result;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Warmup(double[] a, double[] b, double[] c, int n)
+        => Optimized(a, b, c, n);
+
+    static double Median(int runs, Action fn)
+    {
+        var t = new double[runs];
+        for (int i = 0; i < runs; i++)
+        {
+            var sw = Stopwatch.StartNew(); fn(); sw.Stop();
+            t[i] = sw.Elapsed.TotalSeconds;
+        }
+        Array.Sort(t);
+        return t[runs / 2];
+    }
+
+    static double[] GenMatrix(int n)
+    {
+        var r = new Random(42);
+        var m = new double[n * n];
+        for (int i = 0; i < m.Length; i++) m[i] = r.NextDouble();
+        return m;
+    }
+
+    static double MaxDiff(double[] a, double[] b)
+    {
+        double d = 0;
+        for (int i = 0; i < a.Length; i++)
+        { double x = Math.Abs(a[i] - b[i]); if (x > d) d = x; }
+        return d;
+    }
+}
 
