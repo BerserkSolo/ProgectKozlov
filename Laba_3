@@ -1,0 +1,551 @@
+#include <iostream>
+#include <vector>
+#include <queue>      // STL очередь (пункт В)
+#include <chrono>     // Для замера времени
+using namespace std;
+
+
+//============================================================================
+// ЧАСТЬ 1: СОЗДАНИЕ СЕТКИ
+
+// Функция для ввода сетки с клавиатуры
+// Создаем двумерный массив "grid": M - строк , N-столбцов(везде false); 
+// просим пользователя заполнить клетки и пропуски, если 1 - то true, иначе false  
+vector<vector<bool>> inputGrid(int M, int N) {
+    vector<vector<bool>> grid(M, vector<bool>(N));
+
+    cout << "Enter grid " << M << "x" << N << endl;
+    cout << "1 - there is a cell, 0 - there isn't a cell" << endl;
+
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            int x;
+            cin >> x;
+            grid[i][j] = (x == 1);
+        }
+    }
+
+    return grid;
+}
+// Функция для вывода сетки
+// Проходим по массиву. Если элемент true - "#", иначе - "false"
+void printGrid(const vector<vector<bool>>& grid, int M, int N) {
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            cout << (grid[i][j] ? '#' : '.');// Тернарный оператор(только компактность кода, скорость не меняет)
+        }
+        cout << endl;
+    }
+}
+
+//============================================================================
+//  ЧАСТЬ 2.1: ОЧЕРЕДЬ
+// ===========================================================================
+//  ЧАСТЬ 2.1: ОЧЕРЕДЬ ЧЕРЕЗ МАССИВ (ПУНКТ А)
+class ArrayQueue {
+private:
+    pair<int, int>* data;
+    int capacity;
+    int head;
+    int tail;
+    int count; // кол-во элементов в очерреди
+public:
+    ArrayQueue(int maxSize) { // maxSize = M * N в maine
+        capacity = maxSize; // запоминаем размер
+        data = new pair<int, int>[capacity]; // просим операциооную сист выделить память для очереди
+        head = 0;
+        tail = 0;
+        count = 0;
+    }
+
+    ~ArrayQueue() { // используем диструктор для отчистки памяти после того, как прошли очередь
+        delete[] data;
+    }
+
+    void push(pair<int, int> value) {//добавляем в конец новую пару
+        data[tail] = value;
+        tail = (tail + 1) % capacity; // !!! ДЕЛИМ на capacity чтобы "закольцевать" очередь
+        count++; // так как довили элемент 
+    }
+
+    void pop() {   // пеередвигаем ead, "удаляеем" элемент из очереди
+        head = (head + 1) % capacity;
+        count--; // так как обаботали один элемент 
+    }
+
+    pair<int, int> front() { // смотрим какой элемент
+        return data[head];
+    }
+
+    bool empty() { // проверка на "пустоту" очереди, нужно жля while()
+        return count == 0;
+    }
+};
+
+
+// ===========================================================================
+// ЧАСТЬ 2.2: ОЧЕРЕДЬ ЧЕРЕЗ СВЯЗНЫЙ СПИСОК (ПУНКТ Б)
+// Вместо массива — цепочка узлов
+
+class ListQueue {
+private:
+    // Узел — элемент цепочки
+    struct Node {
+        pair<int, int> value;   // координаты клетки (x, y)
+        Node* next;              // указатель на следующий узел
+
+        Node(pair<int, int> v) { // конструктор узла
+            value = v;
+            next = nullptr;       // пока нет следующего
+        }
+    };
+
+    Node* head;   // начало очереди (откуда забираем)
+    Node* tail;   // конец очереди (куда кладём)
+    int count;    // количество элементов
+
+public:
+    ListQueue() {    // конструктор — пустая очередь
+        head = nullptr;
+        tail = nullptr;
+        count = 0;
+    }
+
+    ~ListQueue() {   // деструктор — удаляем ВСЕ узлы, иначе утечка памяти!
+        while (head != nullptr) {
+            Node* temp = head;      // запомнили текущий
+            head = head->next;      // сдвинули на следующий
+            delete temp;            // удалили старый
+        }
+    }
+
+    void push(pair<int, int> value) { // добавляем в конец
+        Node* newNode = new Node(value); // создали новый узел в памяти
+
+        if (tail == nullptr) {          // очередь была пуста
+            head = tail = newNode;       // и head, и tail на него
+        }
+        else {                         // очередь не пуста
+            tail->next = newNode;        // старый tail ссылается на новый
+            tail = newNode;              // tail теперь на новый
+        }
+        count++;
+    }
+
+    void pop() { // удаляем из начала
+        if (empty()) return;
+
+        Node* temp = head;      // запомнили старый head
+        head = head->next;      // сдвинули head
+        delete temp;            // удалили узел из памяти!
+        count--;
+
+        if (head == nullptr) {  // удалили последний элемент
+            tail = nullptr;     // tail тоже nullptr
+        }
+    }
+
+    pair<int, int> front() { // смотрим первый элемент
+        return head->value;
+    }
+
+    bool empty() { // проверка на пустоту
+        return head == nullptr;
+    }
+};
+
+
+//============================================================================
+// ЧАСТЬ 2.3: ОЧЕРЕДЬ ЧЕРЕЗ STL (ПУНКТ В)
+
+// Используем готовую очередь из стандартной библиотеки C++.
+// Не пишем свою реализацию — используем std::queue.
+
+// !!! std::queue уже реализована в <queue>, просто используем:
+// std::queue<pair<int,int>> q;
+// q.push({i,j});
+
+
+//============================================================================
+// ЧАСТЬ 3: BFS 
+// ЧАСТЬ 3.1.1 БЕЗ МОДИФИКАЦИИ (плоскость) — для массива
+
+//вверх, вниз, влево, вправо
+const int DX[4] = { -1, 1, 0, 0 };
+const int DY[4] = { 0, 0, -1, 1 };
+
+int countComponents(int M, int N, const vector<vector<bool>>& grid) {
+    //создаем такой же массив как и grid, где все false, то есть еще не посетили ни одного элемента
+    vector<vector<bool>> visited(M, vector<bool>(N, false));
+    int components = 0; // куски
+
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            if (!grid[i][j] || visited[i][j]) continue; // если в grid сетка удалена, то пропускаем ее
+
+            components++;
+            ArrayQueue q(M * N);
+            visited[i][j] = true; // пометили первый элемент
+            q.push({ i, j });//добавили элемент
+
+            while (!q.empty()) {
+                pair<int, int> current = q.front();
+                q.pop();
+                int x = current.first;
+                int y = current.second;
+
+                for (int d = 0; d < 4; d++) {
+                    int nx = x + DX[d];
+                    int ny = y + DY[d];
+
+                    //!!! Проверка границы. Если за нею, то пропускаем
+                    if (nx < 0 || nx >= M || ny < 0 || ny >= N) continue;
+                    //если есть клетка, и мы ее еще не защищали, то помечаем ее и добавляем в конец
+                    if (grid[nx][ny] && !visited[nx][ny]) {
+                        visited[nx][ny] = true;
+                        q.push({ nx, ny });
+                    }
+                }
+            }
+        }
+    }
+
+    return components; //выводим кол-во кусков
+}
+
+
+//============================================================================
+// ЧАСТЬ 3.1.2: BFS С МОДИФИКАЦИЕЙ (ЦИЛИНДР) — для массива
+
+// ЦИЛИНДР: левый и правый край склеены
+// Стоит понимать, что по горизонтали крайние клетки стали соседемя, а по вертикали ничего не меняется. Приходим к выводу, что код будет 
+// аналогичный, а точнее такм же кромепроверки(теперь только вертикаль) + используем формулы для корректной работы с координатами
+// Координата y (столбец) работает по кругу: y = (y % N + N) % N
+
+int countComponentsCylinder(int M, int N, const vector<vector<bool>>& grid) {
+    //создаем такой же массив как и grid, где все false
+    vector<vector<bool>> visited(M, vector<bool>(N, false));
+    int components = 0; // куски
+
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            if (!grid[i][j] || visited[i][j]) continue; // если удалена или посещена - пропускаем
+
+            components++;
+            ArrayQueue q(M * N);
+            visited[i][j] = true; // пометили стартовую
+            q.push({ i, j });//добавили в очередь
+
+            while (!q.empty()) {
+                pair<int, int> current = q.front();
+                q.pop();
+                int x = current.first;
+                int y = current.second;
+
+                //проверяем четырех соседей
+                for (int d = 0; d < 4; d++) {
+                    int nx = x + DX[d];
+                    int ny = y + DY[d];
+
+                    //!!! Проверка ВЕРТИКАЛЬНЫХ границ (вверх/вниз) - как на плоскости
+                    if (nx < 0 || nx >= M) continue;
+
+                    //!!!
+                    int nyCyl = ((ny % N) + N) % N;
+
+                    // Проверяем соседа с цилиндрической координатой
+                    if (grid[nx][nyCyl] && !visited[nx][nyCyl]) {
+                        visited[nx][nyCyl] = true;
+                        q.push({ nx, ny }); // в очередь кладем оригинальные координаты (для проверки соседей)
+                    }
+                }
+            }
+        }
+    }
+
+    return components; //выводим кол-во кусков
+}
+
+
+//============================================================================
+// ЧАСТЬ 3.2.1: BFS БЕЗ МОДИФИКАЦИИ (плоскость) — для связного списка
+
+// ТОТ ЖЕ АЛГОРИТМ, но очередь через связный список (ListQueue)!
+
+int countComponentsList(int M, int N, const vector<vector<bool>>& grid) {
+    //создаем такой же массив как и grid, где все false, то есть еще не посетили ни одного элемента
+    vector<vector<bool>> visited(M, vector<bool>(N, false));
+    int components = 0; // куски
+
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            if (!grid[i][j] || visited[i][j]) continue; // если в grid сетка удалена, то пропускаем ее
+
+            components++;
+            ListQueue q; // !!! СВЯЗНЫЙ СПИСОК, не массив! Размер не задаем — растет сам.
+            visited[i][j] = true; // пометили первый элемент
+            q.push({ i, j });//добавили элемент
+
+            while (!q.empty()) {
+                pair<int, int> current = q.front();
+                q.pop();
+                int x = current.first;
+                int y = current.second;
+
+                for (int d = 0; d < 4; d++) {
+                    int nx = x + DX[d];
+                    int ny = y + DY[d];
+
+                    //!!! Проверка границы. Если за нею, то пропускаем
+                    if (nx < 0 || nx >= M || ny < 0 || ny >= N) continue;
+                    //если есть клетка, и мы ее еще не защищали, то помечаем ее и добавляем в конец
+                    if (grid[nx][ny] && !visited[nx][ny]) {
+                        visited[nx][ny] = true;
+                        q.push({ nx, ny });
+                    }
+                }
+            }
+        }
+    }
+
+    return components; //выводим кол-во кусков
+}
+
+
+//============================================================================
+// ЧАСТЬ 3.2.2: BFS С МОДИФИКАЦИЕЙ (ЦИЛИНДР) — для связного списка
+
+// ТОТ ЖЕ АЛГОРИТМ + цилиндр, но очередь через связный список!
+
+int countComponentsCylinderList(int M, int N, const vector<vector<bool>>& grid) {
+    //создаем такой же массив как и grid, где все false
+    vector<vector<bool>> visited(M, vector<bool>(N, false));
+    int components = 0; // куски
+
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            if (!grid[i][j] || visited[i][j]) continue; // если удалена или посещена - пропускаем
+
+            components++;
+            ListQueue q; // !!! СВЯЗНЫЙ СПИСОК
+            visited[i][j] = true; // пометили стартовую
+            q.push({ i, j });//добавили в очередь
+
+            while (!q.empty()) {
+                pair<int, int> current = q.front();
+                q.pop();
+                int x = current.first;
+                int y = current.second;
+
+                //проверяем четырех соседей
+                for (int d = 0; d < 4; d++) {
+                    int nx = x + DX[d];
+                    int ny = y + DY[d];
+
+                    //!!! Проверка ВЕРТИКАЛЬНЫХ границ (вверх/вниз) - как на плоскости
+                    if (nx < 0 || nx >= M) continue;
+
+                    //!!!
+                    int nyCyl = ((ny % N) + N) % N;
+
+                    // Проверяем соседа с цилиндрической координатой
+                    if (grid[nx][nyCyl] && !visited[nx][nyCyl]) {
+                        visited[nx][nyCyl] = true;
+                        q.push({ nx, ny }); // в очередь кладем оригинальные координаты (для проверки соседей)
+                    }
+                }
+            }
+        }
+    }
+
+    return components; //выводим кол-во кусков
+}
+
+
+//============================================================================
+// ЧАСТЬ 3.1.1: BFS БЕЗ МОДИФИКАЦИИ (плоскость) — для STL (ПУНКТ В)
+
+// ТОТ ЖЕ АЛГОРИТМ, но очередь из стандартной библиотеки std::queue!
+
+int countComponentsSTL(int M, int N, const vector<vector<bool>>& grid) {
+    //создаем такой же массив как и grid, где все false
+    vector<vector<bool>> visited(M, vector<bool>(N, false));
+    int components = 0; // куски
+
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            if (!grid[i][j] || visited[i][j]) continue; // если удалена или посещена - пропускаем
+
+            components++;
+            queue<pair<int, int>> q; // !!! STL очередь. Не пишем свою — готовая из библиотеки!
+            visited[i][j] = true; // пометили стартовую
+            q.push({ i, j });//добавили в очередь
+
+            while (!q.empty()) {
+                pair<int, int> current = q.front(); // !!! q.front() — тот же метод, что и у нас
+                q.pop(); // !!! q.pop() — тот же метод
+                int x = current.first;
+                int y = current.second;
+
+                //проверяем четырех соседей
+                for (int d = 0; d < 4; d++) {
+                    int nx = x + DX[d];
+                    int ny = y + DY[d];
+
+                    //!!! Проверка границы. Если за нею, то пропускаем
+                    if (nx < 0 || nx >= M || ny < 0 || ny >= N) continue;
+                    //если есть клетка, и мы ее еще не защищали, то помечаем ее и добавляем в конец
+                    if (grid[nx][ny] && !visited[nx][ny]) {
+                        visited[nx][ny] = true;
+                        q.push({ nx, ny }); // !!! q.push() — тот же метод
+                    }
+                }
+            }
+        }
+    }
+
+    return components; //выводим кол-во кусков
+}
+
+
+//============================================================================
+// ЧАСТЬ 3.2.2: BFS С МОДИФИКАЦИЕЙ (ЦИЛИНДР) — для STL (ПУНКТ В)
+
+// ТОТ ЖЕ АЛГОРИТМ + цилиндр, но очередь из std::queue!
+
+int countComponentsCylinderSTL(int M, int N, const vector<vector<bool>>& grid) {
+    //создаем такой же массив как и grid, где все false
+    vector<vector<bool>> visited(M, vector<bool>(N, false));
+    int components = 0; // куски
+
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            if (!grid[i][j] || visited[i][j]) continue; // если удалена или посещена - пропускаем
+
+            components++;
+            queue<pair<int, int>> q; // !!! STL очередь
+            visited[i][j] = true; // пометили стартовую
+            q.push({ i, j });//добавили в очередь
+
+            while (!q.empty()) {
+                pair<int, int> current = q.front();
+                q.pop();
+                int x = current.first;
+                int y = current.second;
+
+                //проверяем четырех соседей
+                for (int d = 0; d < 4; d++) {
+                    int nx = x + DX[d];
+                    int ny = y + DY[d];
+
+                    //!!! Проверка ВЕРТИКАЛЬНЫХ границ (вверх/вниз) - как на плоскости
+                    if (nx < 0 || nx >= M) continue;
+
+                    //!!!
+                    int nyCyl = ((ny % N) + N) % N;
+
+                    // Проверяем соседа с цилиндрической координатой
+                    if (grid[nx][nyCyl] && !visited[nx][nyCyl]) {
+                        visited[nx][nyCyl] = true;
+                        q.push({ nx, ny });
+                    }
+                }
+            }
+        }
+    }
+
+    return components; //выводим кол-во кусков
+}
+
+
+//============================================================================
+// ЧАСТЬ 4: СРАВНЕНИЕ ПРОИЗВОДИТЕЛЬНОСТИ
+
+// Замеряем время выполнения каждой реализации для одной и той же сетки.
+void benchmark(int M, int N, const vector<vector<bool>>& grid, int runs) {
+    cout << endl << "=== PERFORMANCE COMPARISON ===" << endl;
+    cout << "Grid size: " << M << "x" << N << ", runs: " << runs << endl << endl;
+
+    // --- Пункт А: Массив ---
+    auto start = chrono::high_resolution_clock::now();
+    for (int r = 0; r < runs; r++) {
+        countComponents(M, N, grid);
+    }
+    auto end = chrono::high_resolution_clock::now();
+    auto timeArray = chrono::duration<double, milli>(end - start).count();
+
+    // --- Пункт Б: Связный список ---
+    start = chrono::high_resolution_clock::now();
+    for (int r = 0; r < runs; r++) {
+        countComponentsList(M, N, grid);
+    }
+    end = chrono::high_resolution_clock::now();
+    auto timeList = chrono::duration<double, milli>(end - start).count();
+
+    // --- Пункт В: STL ---
+    start = chrono::high_resolution_clock::now();
+    for (int r = 0; r < runs; r++) {
+        countComponentsSTL(M, N, grid);
+    }
+    end = chrono::high_resolution_clock::now();
+    auto timeSTL = chrono::duration<double, milli>(end - start).count();
+
+    // Вывод результатов
+    cout << "Array (A):      " << timeArray << " ms" << endl;
+    cout << "List (B):       " << timeList << " ms" << endl;
+    cout << "STL (V):        " << timeSTL << " ms" << endl;
+
+    cout << endl << "Conclusion:" << endl;
+    if (timeArray <= timeList && timeArray <= timeSTL)
+        cout << "Array is the fastest " << endl;
+    if (timeSTL <= timeArray && timeSTL <= timeList)
+        cout << "STL is the fastest " << endl;
+    if (timeList <= timeArray && timeList <= timeSTL)
+        cout << "List is fastest " << endl;
+}
+
+
+//============================================================================
+// ЧАСТЬ 5: ОТВЕТ
+
+
+int main() {
+    cout << "Autor: [Kozlov Gleb]" << endl;
+    cout << "Group: [090304_RPI_b_o25]" << endl << endl;
+
+    int M, N;
+    cout << "Enter size of grid M N: ";
+    cin >> M >> N;
+
+    vector<vector<bool>> grid = inputGrid(M, N);
+
+    cout << endl << "Your grid" << endl;
+    printGrid(grid, M, N);
+
+    // ПУНКТ А: Массив
+    cout << endl << "=== ARRAY QUEUE (Point A) ===" << endl;
+    int resultPlane = countComponents(M, N, grid);
+    cout << "Plane pieces: " << resultPlane << endl;
+    int resultCylinder = countComponentsCylinder(M, N, grid);
+    cout << "Cylinder pieces: " << resultCylinder << endl;
+
+    // ПУНКТ Б: Связный список
+    cout << endl << "=== LIST QUEUE (Point B) ===" << endl;
+    int resultPlaneList = countComponentsList(M, N, grid);
+    cout << "Plane pieces: " << resultPlaneList << endl;
+    int resultCylinderList = countComponentsCylinderList(M, N, grid);
+    cout << "Cylinder pieces: " << resultCylinderList << endl;
+
+    // ПУНКТ В: STL
+    cout << endl << "=== STL QUEUE (Point V) ===" << endl;
+    int resultPlaneSTL = countComponentsSTL(M, N, grid);
+    cout << "Plane pieces: " << resultPlaneSTL << endl;
+    int resultCylinderSTL = countComponentsCylinderSTL(M, N, grid);
+    cout << "Cylinder pieces: " << resultCylinderSTL << endl;
+
+    // СРАВНЕНИЕ ПРОИЗВОДИТЕЛЬНОСТИ
+    int runs = (M * N < 1000) ? 1000 : 10;
+    benchmark(M, N, grid, runs);
+
+    return 0;
+}
