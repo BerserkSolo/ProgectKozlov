@@ -1,0 +1,264 @@
+#include <algorithm>
+#include <chrono>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <vector>
+
+struct Node {
+    std::string symbol;
+    int8_t      count;
+    Node* next;
+};
+
+class SymbolFrequencyTable {
+    static constexpr size_t INITIAL_BUCKET_COUNT = 64;
+
+    Node** bucket_array;
+    size_t   bucket_count;
+    size_t   element_count;
+
+    static size_t compute_hash(const std::string& text) {
+        size_t hash_value = 14695981039346656037ULL;
+        for (unsigned char byte : text) {
+            hash_value ^= byte;
+            hash_value *= 1099511628211ULL;
+        }
+        return hash_value;
+    }
+
+    void expand_and_rehash() {
+        size_t new_bucket_count = bucket_count * 2;
+        Node** new_buckets = new Node * [new_bucket_count]();
+
+        for (size_t i = 0; i < bucket_count; ++i) {
+            Node* current = bucket_array[i];
+            while (current) {
+                Node* next_node = current->next;
+                size_t new_index = compute_hash(current->symbol) & (new_bucket_count - 1);
+                current->next = new_buckets[new_index];
+                new_buckets[new_index] = current;
+                current = next_node;
+            }
+        }
+
+        delete[] bucket_array;
+        bucket_array = new_buckets;
+        bucket_count = new_bucket_count;
+    }
+
+public:
+    SymbolFrequencyTable()
+        : bucket_count(INITIAL_BUCKET_COUNT), element_count(0) {
+        bucket_array = new Node * [INITIAL_BUCKET_COUNT]();
+    }
+
+    ~SymbolFrequencyTable() { clear(); delete[] bucket_array; }
+
+    SymbolFrequencyTable(const SymbolFrequencyTable&) = delete;
+    SymbolFrequencyTable& operator=(const SymbolFrequencyTable&) = delete;
+
+    SymbolFrequencyTable(SymbolFrequencyTable&& other) noexcept
+        : bucket_array(other.bucket_array),
+        bucket_count(other.bucket_count),
+        element_count(other.element_count) {
+        other.bucket_array = nullptr;
+        other.bucket_count = other.element_count = 0;
+    }
+
+    SymbolFrequencyTable& operator=(SymbolFrequencyTable&& other) noexcept {
+        if (this != &other) {
+            clear();
+            delete[] bucket_array;
+            bucket_array = other.bucket_array;
+            bucket_count = other.bucket_count;
+            element_count = other.element_count;
+            other.bucket_array = nullptr;
+            other.bucket_count = other.element_count = 0;
+        }
+        return *this;
+    }
+
+    void clear() {
+        for (size_t i = 0; i < bucket_count; ++i) {
+            Node* current = bucket_array[i];
+            while (current) {
+                Node* to_delete = current;
+                current = current->next;
+                delete to_delete;
+            }
+            bucket_array[i] = nullptr;
+        }
+        element_count = 0;
+    }
+
+    void add_symbol(const std::string& symbol) {
+        if (element_count * 4 >= bucket_count * 3)
+            expand_and_rehash();
+
+        size_t index = compute_hash(symbol) & (bucket_count - 1);
+
+        for (Node* current = bucket_array[index]; current; current = current->next)
+            if (current->symbol == symbol) {
+                ++current->count;
+                return;
+            }
+
+        bucket_array[index] = new Node{ symbol, 1, bucket_array[index] };
+        ++element_count;
+    }
+
+    int8_t get_frequency(const std::string& symbol) const {
+        size_t index = compute_hash(symbol) & (bucket_count - 1);
+        for (Node* current = bucket_array[index]; current; current = current->next)
+            if (current->symbol == symbol)
+                return current->count;
+        return 0;
+    }
+
+    template<typename Action>
+    void for_each_symbol(Action&& action) const {
+        for (size_t i = 0; i < bucket_count; ++i)
+            for (Node* current = bucket_array[i]; current; current = current->next)
+                action(current->symbol, current->count);
+    }
+};
+
+struct DictionaryWord {
+    std::string           text;
+    SymbolFrequencyTable  symbol_counts;
+    int                   byte_length;
+    int                   char_length;
+};
+
+static const uint8_t UTF8_CHAR_LENGTH[256] = {
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+    3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3, 4,4,4,4,4,4,4,4,5,5,5,5,6,6,1,1
+};
+
+inline std::string extract_next_utf8_char(const uint8_t*& position, const uint8_t* end) {
+    if (position >= end)
+        return "";
+
+    int char_bytes = UTF8_CHAR_LENGTH[*position];
+    if (position + char_bytes > end)
+        char_bytes = 1;
+
+    std::string character(reinterpret_cast<const char*>(position), char_bytes);
+    position += char_bytes;
+    return character;
+}
+
+SymbolFrequencyTable build_frequency_table(const std::string& text, int& out_char_count) {
+    SymbolFrequencyTable frequencies;
+    const uint8_t* current = reinterpret_cast<const uint8_t*>(text.data());
+    const uint8_t* end = current + text.size();
+
+    out_char_count = 0;
+    while (current < end) {
+        std::string symbol = extract_next_utf8_char(current, end);
+        if (!symbol.empty()) {
+            frequencies.add_symbol(symbol);
+            ++out_char_count;
+        }
+    }
+    return frequencies;
+}
+
+bool word_fits_into_query(const SymbolFrequencyTable& word_freqs,
+    const SymbolFrequencyTable& query_freqs) {
+    bool can_form = true;
+    word_freqs.for_each_symbol([&](const std::string& symbol, int8_t needed_count) {
+        if (can_form && needed_count > query_freqs.get_frequency(symbol))
+            can_form = false;
+        });
+    return can_form;
+}
+
+int main(int argc, char* argv[]) {
+    std::cout << "Completed by: RPIb-090304-o25 Kozlov G.S.\n";
+
+    auto load_start = std::chrono::steady_clock::now();
+
+    std::ifstream dictionary_file("nouns.txt");
+    if (!dictionary_file) {
+        std::cerr << "Error: failed to open nouns.txt\n";
+        return 1;
+    }
+
+    std::vector<DictionaryWord> dictionary;
+    dictionary.reserve(100'000);
+
+    for (std::string line; std::getline(dictionary_file, line); ) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty())
+            continue;
+
+        DictionaryWord entry;
+        entry.text = line;
+        entry.byte_length = static_cast<int>(line.size());
+        entry.symbol_counts = build_frequency_table(line, entry.char_length);
+        dictionary.push_back(std::move(entry));
+    }
+
+    double load_time_ms = 0.001 * std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - load_start).count();
+
+    std::cerr << "Loaded: " << dictionary.size()
+        << " entries in " << load_time_ms << " ms\n";
+
+    auto process_query = [&](const std::string& query_text) {
+        auto search_start = std::chrono::steady_clock::now();
+
+        int query_char_count = 0;
+        SymbolFrequencyTable query_frequencies = build_frequency_table(query_text, query_char_count);
+        int query_byte_length = static_cast<int>(query_text.size());
+
+        std::vector<const DictionaryWord*> matching_words;
+        matching_words.reserve(1024);
+
+        for (const auto& word : dictionary)
+            if (word.byte_length <= query_byte_length
+                && word.char_length <= query_char_count
+                && word_fits_into_query(word.symbol_counts, query_frequencies))
+                matching_words.push_back(&word);
+
+        std::sort(matching_words.begin(), matching_words.end(),
+            [](const DictionaryWord* first, const DictionaryWord* second) {
+                return first->char_length > second->char_length;
+            });
+
+        double search_time_ms = 0.001 * std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - search_start).count();
+
+        std::cout << ">>> Query: \"" << query_text
+            << "\" — results: " << matching_words.size() << " <<<\n";
+        for (const auto* word_ptr : matching_words)
+            std::cout << "  - " << word_ptr->text << '\n';
+        std::cout << "Processing time: " << search_time_ms << " ms\n\n";
+        };
+
+    if (argc > 1) {
+        process_query(argv[1]);
+    }
+    else {
+        std::string user_input;
+        std::cout << "Enter string to search (Enter to exit): ";
+        while (std::getline(std::cin, user_input)) {
+            if (!user_input.empty() && user_input.back() == '\r')
+                user_input.pop_back();
+            if (user_input.empty())
+                break;
+            process_query(user_input);
+            std::cout << "Enter string to search (Enter to exit): ";
+        }
+    }
+    return 0;
+}
